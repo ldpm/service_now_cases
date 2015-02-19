@@ -65,6 +65,7 @@ class ServiceNowRest
    * @return mixed  a data structure returned by the API server.
    * @todo throw an exception if the Cases don't come back well-formed.
    * @todo how to specify sort order.
+   * @todo replace 'drupal_http' with guzzle; this is the only drupal-specific thing in this library!
    */
   public function getCasesXML($filters = NULL)
   {
@@ -119,6 +120,7 @@ class ServiceNowRest
 
   /**
    * buildEndpoint encodes the parameters from various types of query.
+   * @todo replace 'drupal_http' with guzzle; this is the only drupal-specific thing in this library!
    *
    */
   public function buildEndpoint($filters = NULL)
@@ -144,6 +146,7 @@ class ServiceNowRest
    * @throws Exception
    * @return array  of ServiceNowCategory objects
    *
+   * @todo replace 'drupal_http' with guzzle; this is the only drupal-specific thing in this library!
    */
 
   public function getCategories($filters = NULL)
@@ -177,6 +180,7 @@ class ServiceNowRest
    *
    * @throws Exception
    * @return array
+   * @todo replace 'drupal_http' with guzzle; this is the only drupal-specific thing in this library!
    */
   public function getAccount($filters = NULL)
   {
@@ -193,7 +197,6 @@ class ServiceNowRest
     foreach ($actual->records as $r) {
       $accounts["$r->u_username"] = $r->sys_id;
     }
-    //dsm($accounts);
     return $accounts;
   }
 
@@ -201,6 +204,7 @@ class ServiceNowRest
    * @param null $filters
    * @return array
    * @throws Exception
+   * @todo replace 'drupal_http' with guzzle; this is the only drupal-specific thing in this library!
    */
   public function getTLDs($filters = NULL)
   {
@@ -234,6 +238,7 @@ class ServiceNowRest
    * @todo throw exceptions if the payload is malformed (or if json_encode
    * doesn't like it).
    * @todo rename so that it is insertRecord and works for Subnets and Categories.
+   * @todo replace 'drupal_http' with guzzle; this is the only drupal-specific thing in this library!
    */
   public
   function insertRecord($payload = NULL, $format = "JSON")
