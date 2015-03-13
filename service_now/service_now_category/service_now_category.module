@@ -1,0 +1,97 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: lmiller
+ * Date: 2/4/14
+ * Time: 4:26 PM
+ */
+
+/**
+ * Implementation of hook_menu
+ */
+function service_now_category_menu() {
+  $items = array();
+  $items['admin/config/services/servicenow/category'] = array(
+    'title' => t('ServiceNow Dynamic Categories'),
+    'access arguments' => array('administer Service Now Integration'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('service_now_category_settings'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+  );
+  return $items;
+}
+
+/**
+ * Callback function for Category menu.
+ *
+ * @return mixed
+ */
+function service_now_category_settings() {
+  $form['service_now_category_endpoint'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST endpoint URL for Categories',
+    '#description' => t("Please enter the URL for the ServiceNow REST endpoint for Categories.  It should end in ?"),
+    '#default_value' => variable_get('service_now_category_endpoint'),
+  );
+  return system_settings_form($form);
+}
+
+/**
+ * @return ServiceNowRest
+ */
+function service_now_category_construct() {
+  if ($path = libraries_get_path('service_now')) {
+    include_once "$path/ServiceNowRest.class.php";
+    spl_autoload_register(array('ServiceNowRest', 'snrAutoload'));
+  }
+  $rest = new ServiceNowRest(
+    variable_get('service_now_username'),
+    variable_get('service_now_password'),
+    variable_get('service_now_category_endpoint')
+  );
+  try {
+    $rest->encodeAuthorization();
+  }
+  catch (Exception $e) {
+    dsm($e->getMessage());
+  }
+  return $rest;
+}
+
+/**
+ * Implements hook_webform_select_options_info.
+ *
+ * Provides a drop-down of visible ServiceNow categories.
+ */
+function service_now_category_webform_select_options_info() {
+  $items = array();
+  $items['service_now_categories'] = array(
+    'title' => t("Service Now visible categories"),
+    'options callback' => 'service_now_category_options_callback'
+  );
+  return $items;
+}
+
+/**
+ * @return array
+ */
+function service_now_category_options_callback() {
+  $options = array();
+  $rest = service_now_category_construct();
+  $cats = $rest->getCategories();
+  foreach ($cats as $cat) {
+    if (1) { //($cat->visibility)
+      $options[$cat->sys_id] = $cat->name;
+    }
+  }
+  return $options;
+}
+
+function service_now_category_get_category_by_sysid($case) {
+  $rest = service_now_category_construct();
+  $categories = $rest->getCategories(array('sys_id' => $case->category));
+  $case->category = $categories[0];
+  return $case;
+}
+

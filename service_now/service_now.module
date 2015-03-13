@@ -1,0 +1,820 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: lmiller
+ * Date: 1/28/14
+ * Time: 5:58 PM
+ */
+
+/**
+ * Implements hook_permission.
+ *
+ * @return array
+ *  The array containing new permissions.
+ */
+function service_now_permission()
+{
+  $perm = array();
+  $perm['administer Service Now Integration'] = array(
+    'title' => t('Administer Service Now Integration'),
+    'description' => t('Alter configuration for Service Now Integration'),
+    'restrict access' => TRUE,
+  );
+  $perm['view own cases'] = array(
+    'title' => t('View Own Cases'),
+    'description' => t('View ServiceNow cases that you have opened'),
+  );
+  $perm['view registrar cases'] = array(
+    'title' => t("View My Registrar's Cases"),
+    'description' => t('View ServiceNow cases that have opened on behalf of your company'),
+  );
+  $perm['view all cases'] = array(
+    'title' => t('View All Cases'),
+    'description' => t('View all ServiceNow cases opened by anyone'),
+  );
+  return $perm;
+}
+
+/**
+ * Implements hook_menu.
+ *
+ * @return array
+ *  The array containing new menu items.
+ *
+ * @see service_now_settings()  for callback for the settings menu.
+ */
+function service_now_menu()
+{
+  $items = array();
+  $items['admin/config/services/servicenow'] = array(
+    'title' => t('ServiceNow Integration'),
+    'access arguments' => array('administer Service Now Integration'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('service_now_settings'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/config/services/servicenow/main'] = array(
+    'title' => t('ServiceNow Integration'),
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+    'weight' => -20,
+  );
+  $items['support/case'] = array(
+    'title' => t('Support Case Detail'),
+    'access arguments' => array('view own cases'),
+    'page callback' => 'service_now_case_detail_page',
+  );
+  return $items;
+}
+
+/**
+ * Simplifies the construction of a ServiceNowRest call.
+ *
+ * @return ServiceNowRest
+ */
+function service_now_construct($format = 'JSON', $endpoint = NULL)
+{
+  if ($path = libraries_get_path('service_now')) {
+    include_once "$path/ServiceNowRest.class.php";
+  }
+  if (!isset($endpoint)) {
+    $endpoint = variable_get('service_now_endpoint');
+  }
+  $rest = new ServiceNowRest(
+    variable_get('service_now_username'),
+    variable_get('service_now_password'),
+    $endpoint,
+    $format
+  );
+  try {
+    $rest->encodeAuthorization();
+  } catch (Exception $e) {
+    dsm($e->getMessage());
+  }
+  return $rest;
+}
+
+/**
+ * Generates the page content around the case detail.
+ *
+ * Performs the following checks:
+ *  - You have permission to view your own tickets (from ACL)
+ *  - The ticket belongs to you
+ *
+ * @return string
+ * @todo check that the ticket belongs to the logged-in user.
+ * @todo create a 'just my cases' callback elsewhere and link to it here.
+ */
+function service_now_case_detail_page()
+{
+  if (arg(2) == "") {
+    if (user_access('view all cases')) {
+      return service_now_display_cases();
+    } else {
+      return MENU_ACCESS_DENIED;
+    }
+  }
+  $case = service_now_case_detail(arg(2));
+  return theme('service_now_case', array('case' => $case));
+}
+
+/**
+ * Given a Case ID, fetches and returns the record of that case.
+ *
+ * @param null $caseID
+ * @return mixed
+ */
+function service_now_case_detail($caseID = NULL)
+{
+  $rest = service_now_construct('XML');
+  $filters = array("number" => $caseID);
+  try {
+    // $cases should be an array of ServiceNowCase objects with exactly one
+    // case in it.
+    $cases = $rest->getCasesXML($filters);
+    return $cases[0];
+  } catch (Exception $e) {
+    watchdog('servicenow', 'Could not get Case by CaseID: ' . $e->getMessage());
+  }
+}
+
+function service_now_display_cases()
+{
+  $rest = service_now_construct('XML');
+  try {
+    $vars = array();
+    $cases = $rest->getCasesXML();
+    foreach ($cases as $case) {
+      $vars['rows'][] = array(
+        "<a href='/support/case/" . $case->number . "'>$case->short_description</a>",
+        $case->sys_created_on,
+        $case->sys_updated_on,
+        $case->state,
+      );
+    }
+    $vars['header'] = array(
+      array(
+        "data" => "Title",
+        "field" => "short_description",
+      ),
+      array(
+        "data" => "Creation Date",
+        "field" => "sys_created_on",
+        "sort" => "desc",
+      ),
+      array(
+        "data" => "Last Updated",
+        "field" => "sys_updated_on",
+      ),
+      array(
+        "data" => "Status",
+        "field" => "state",
+      ),
+    );
+    $vars['caption'] = "hello world";
+    $vars['attributes'] = array();
+
+    return theme_table($vars);
+
+  } catch (Exception $e) {
+    watchdog("service_now", "getCases failed", "error");
+    dsm($e->getMessage());
+  }
+}
+
+/**
+ * Debugging function
+ */
+function service_now_get_list()
+{
+  $rest = service_now_construct();
+  try {
+    $data = $rest->getCasesXML();
+    dsm($data);
+  } catch (Exception $e) {
+    dsm($e->getMessage());
+  }
+}
+
+/**
+ * Debugging function
+ */
+function service_now_test_post()
+{
+  $rest = service_now_construct();
+  $rest->insertRecord();
+}
+
+
+/**
+ * Callback function for settings menu.
+ * Creates a system settings form.
+ * @return mixed
+ * @see service_now_menu()  for where this menu is used.
+ */
+function service_now_settings()
+{
+  $form['service_now_endpoint'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST endpoint URL for Cases',
+    '#description' => t("This endpoint is used to access CASES from the 'u_customer_case' table.  It should end in '?',  Don't include the 'JSON'"),
+    '#default_value' => variable_get('service_now_endpoint'),
+  );
+  $form['service_now_username'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST Username',
+    '#description' => t("Please enter the username of the API User"),
+    '#default_value' => variable_get('service_now_username'),
+  );
+  $form['service_now_password'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST API password',
+    '#description' => t("Please enter the Password for the ServiceNow endpoint"),
+    '#default_value' => variable_get('service_now_password'),
+  );
+  $form['service_now_account_endpoint'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST endpoint for Accounts',
+    '#description' => t("This endpoint is used to access ACCOUNTS from the 'u_customer_account' table, for matching UIDs to sys_ids.  It should end in '?', Don't include the 'JSON'"),
+    '#default_value' => variable_get('service_now_account_endpoint'),
+  );
+  $form['service_now_tlds_endpoint'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST endpoint for TLDs',
+    '#description' => t("This endpoint is used to access TLDs. It should end in '?', Don't include the 'JSON'"),
+    '#default_value' => variable_get('service_now_tlds_endpoint'),
+  );
+  $form['service_now_sync_tlds_button'] = array(
+    '#type' => 'submit',
+    '#value' => 'Synchronize TLD Groups with ServiceNow',
+    '#submit' => array('service_now_sync_tlds_callback'),
+  );
+  return system_settings_form($form);
+}
+
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * Adds an additional submit handler to send the ticket to ServiceNow's API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_open_ticket
+ */
+function service_now_form_webform_client_form_47_alter(&$form, &$form_state)
+{
+  $form['#submit'][] = 'service_now_open_ticket';
+}
+
+/**
+ * Callback function for the additional submit handler for the Open Ticket form.
+ *
+ * @param $form
+ * @param $form_state
+ * @return int (either the case number on success, or FALSE on failure)
+ * @see service_now_form_webform_client_form_47_alter()
+ * @see service_now_insert_case()
+ */
+function service_now_open_ticket($form, &$form_state)
+{
+
+  global $user;
+  $payload = array(
+    "u_account" => service_now_get_account_by_uid($user->name),
+    "u_contact_name" => $form_state['values']['submitted_tree']['authorized_contact_requestor'],
+    "u_registrar_contact_by_tld.u_email" => $form_state['values']['submitted_tree']['requestor_email_address'],
+    "u_case_category" => $form_state['values']['submitted_tree']['category_of_request'],
+    "priority" => $form_state['values']['submitted_tree']['severity_impact_to_customer'],
+    "short_description" => $form_state['values']['submitted_tree']['subject'],
+    "description" => $form_state['values']['submitted_tree']['message'],
+    "opened_by" => $form_state['values']['submitted_tree']['authorized_contact_requestor'] . " (" . $form_state['values']['submitted_tree']['requestor_email_address'] . ")",
+    "u_customer_case.u_tld" => $form_state['values']['submitted_tree']['tlds_affected'],
+  );
+  return service_now_insert_case($payload);
+}
+
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * Adds an additional submit handler to send the ticket to ServiceNow's API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_rgp_restore_report
+ */
+function service_now_form_webform_client_form_49_alter(&$form, &$form_state)
+{
+  $form['#submit'][] = 'service_now_rgp_restore_report';
+}
+
+/**
+ * Callback function for the additional submit handler for the RGP Restore Report.
+ *
+ * @param $form
+ * @param $form_state
+ * @return int (either the case number on success, or FALSE on failure)
+ * @see service_now_form_webform_client_form_49_alter()
+ * @see service_now_insert_case()
+ */
+function service_now_rgp_restore_report($form, &$form_state)
+{
+
+  global $user;
+
+  $registrar = 'Registrar: '.$form_state['values']['submitted_tree']['registrar'];
+  $contact = 'Contact: '.$form_state['values']['submitted_tree']['name'];
+  $title = 'Title: '.$form_state['values']['submitted_tree']['title'];
+  $email = 'Email: '.$form_state['values']['submitted_tree']['email'];
+
+  $last_updated_date = 'Last Updated Date: '.$form_state['values']['submitted_tree']['last_updated_date'];
+
+  if ($form_state['values']['submitted_tree']['large_incident_cases']['this_report_refers_to_a_large_incident_case']) {
+     $large_incident_case = 'This report refers to a Large Incident Case';
+  }
+
+  if (!$form_state['values']['submitted_tree']['large_incident_cases']['this_report_refers_to_a_large_incident_case']) {
+     $large_incident_case = 'This report does not refer to a Large Incident Case';
+  }
+
+  $ticket_number = 'Ticket Number: '.$form_state['values']['submitted_tree']['large_incident_cases']['ticket_number'];
+
+  $domain_names = 'Domain Name(s): '."\n".$form_state['values']['submitted_tree']['domain_names'];
+
+  $date_deleted = 'Date Deleted: '.$form_state['values']['submitted_tree']['date_deleted'];
+  $time_deleted = 'Time Deleted: '.$form_state['values']['submitted_tree']['time_deleted'];
+
+  $date_restored = 'Date Restored: '.$form_state['values']['submitted_tree']['date_restored'];
+  $time_restored = 'Time Restored: '.$form_state['values']['submitted_tree']['time_restored'];
+
+  $reason_restored = 'Reason Restored: '.$form_state['values']['submitted_tree']['reason_restored'];
+  $explanation = 'Explanation: '. $form_state['values']['submitted_tree']['explanation'];
+  $required_whois_reports_submitted = 'Required whois reports_submitted?: '. $form_state['values']['submitted_tree']['required_whois_reports_submitted'];
+
+  $whois_before = 'WHOIS data prior to the deletion : '."\n".$form_state['values']['submitted_tree']['whois_before'];
+  $whois_after = 'WHOIS data as it appears now : '."\n".$form_state['values']['submitted_tree']['whois_after'];
+
+  $payload = array(
+
+    "u_account" => service_now_get_account_by_uid($user->name),
+    "u_case_category" => $form_state['values']['submitted_tree']['category'],
+    "u_subject" => 'RGP Restore Report',
+    "description" => $registrar."\n".$contact."\n".$title."\n".$email."\n".$last_updated_date."\n".$large_incident_case."\n".$ticket_number."\n".$domain_names."\n".$date_deleted."\n".$time_deleted."\n".$date_restored."\n".$time_restored."\n".$reason_restored."\n".$explanation."\n".$required_whois_reports_submitted."\n".$whois_before."\n".$whois_after,
+
+    "opened_by" => $form_state['values']['submitted_tree']['name'] . " (" . $form_state['values']['submitted_tree']['email'] . ")",
+  );
+  return service_now_insert_case($payload);
+
+}
+
+/**
+ * Code Doc Number:  89000
+ * Code Title:  Implements hook_form_ID_alter.
+ * Author Initials:  SIC
+ * Customer Portal Form: Request for Enforcement
+ * Alter id:  36
+ * Updated:  5/2/2014
+ */
+function service_now_form_webform_client_form_36_alter(&$form, &$form_state)
+{
+    $form['#submit'][] = 'service_now_request_for_enforcement';
+}
+
+/**
+ * Callback function for ID: 36
+ */
+function service_now_request_for_enforcement($form, &$form_state)
+{
+
+    global $user;
+    //IDENTIFIER
+    $FORM_SUBJECT = "Request for Enforcement";
+
+    //ATTEMPTED TO RESOLVE @pivot control
+
+    if ($form_state['values']['submitted_tree']['attempted_prior_resolution'][0]) {
+
+      $attempted_to_resolve = 'Filing Registrar certifies that, prior to filing this Request for Enforcement, it has attempted to resolve the dispute with
+Respondent.';
+     }
+     else {
+
+       $attempted_to_resolve = 'Filing Registrar has NOT certified that, prior to filing this Request for Enforcement, it has attempted to resolve the dispute with
+Respondent.';
+
+     }
+
+    //Define the form fields:   BSS-CODE-89567
+    //REGISTRAR INFORMATION:
+    $registrar_info = "\nREGISTRAR INFORMATION";
+    $registrar_name = 'Filing Registrar Name: ' . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_name_registrar_id'];
+
+    $transfer_point = 'Filing Registrar Transfer Point of Contact: ' . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_transfer_point_of_contact'];
+    $registrar_address = 'Filing Registrar Address: ' . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_address'];
+    $registrar_email = 'Filing Registrar Email: ' . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_email'];
+    $registrar_phone = 'Filing Registrar Phone: ' . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_phone'];
+    $registrar_fax = 'Filing Registrar Fax: ' . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_fax'];
+    $respo_id = 'Respondent Registrar ID: ' . $form_state['values']['submitted_tree']['registrar_information']['respondent_registrar_name__registrar_id'];
+    $respo_trans_point = 'Respondent Transfer Point of Contact: ' . $form_state['values']['submitted_tree']['registrar_information']['respondent_transfer_point_of_contact'];
+    $respo_email = 'Respondent Email: ' . $form_state['values']['submitted_tree']['registrar_information']['respondent_registrar_email'];
+    $respo_phone = 'Respondent Phone: ' . $form_state['values']['submitted_tree']['registrar_information']['respondent_phone'];
+    $respo_fax = 'Respondent Fax: ' . $form_state['values']['submitted_tree']['registrar_information']['respondent_fax'];
+    //REGISTRANT INFORMATION:
+    $registrant_info = "\nREGISTRANT INFORMATION";
+    $registrant_name = 'Registrant Name: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_name'];
+    $registrant_address1 = 'Registrant Address 1: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_address_1'];
+    $registrant_address2 = 'Registrant Address 2: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_address_2'];
+    $registrant_city = 'Registrant City: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_city'];
+    $registrant_state = 'Registrant State/Province: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_state_province'];
+    $registrant_zip = 'Registrant Postal Code: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_postal_code'];
+    $registrant_country = 'Registrant Country: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_country'];
+    $registrant_email = 'Registrant Email: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_email'];
+    $registrant_phone = 'Registrant Phone: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_phone'];
+    $registrant_fax = 'Registrant Fax: ' . $form_state['values']['submitted_tree']['registrant_information']['registrant_fax'];
+    //ADMIN CONTACT
+    $admin_info = "\nADMINISTRATOR INFORMATION";
+    $admin_contact = 'Administrative Contact: ' . $form_state['values']['submitted_tree']['registrant_information']['adminstrative_contact'];
+    $admin_address1 = 'Admin Contact Address 1: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_address_1'];
+    $admin_address2 = 'Admin Contact Address 2: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_address_2'];
+    $admin_city = 'Admin Contact City: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_city'];
+    $admin_state = 'Admin Contact State/Province: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_state_province'];
+    $admin_zip = 'Admin Contact Postal Code: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_postal_code'];
+    $admin_country = 'Admin Contact Country: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_country'];
+    $admin_email = 'Admin Contact Email: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_email'];
+    $admin_phone = 'Admin Contact Phone: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_phone'];
+    $admin_fax = 'Admin Contact Fax: ' . $form_state['values']['submitted_tree']['registrant_information']['admin_contact_fax'];
+    //BACKGROUND
+    $background = "\nBACKGROUND";
+    $date_of_alleged = 'Date of Alleged Violations: ' . $form_state['values']['submitted_tree']['background']['date_of_alleged_violations'];
+    $incident_desc = "\n" .'Incident Description: ' . "\n" . $form_state['values']['submitted_tree']['background']['incident_description'];
+    $req_remedy = "\n" .'Requested Remedy: ' . $form_state['values']['submitted_tree']['background']['requested_remedy'];
+    $grounds = "\n" .'Grounds: ' . "\n" . $form_state['values']['submitted_tree']['background']['grounds'];
+    $domain_names = "\n" .'Domain Names: ' . "\n" . $form_state['values']['submitted_tree']['background']['domain_names'];
+    $number_of_dispute = "\n" .'Number of Disputed Transfers: ' . $form_state['values']['submitted_tree']['background']['number_of_disputed_transfers'];
+    //ADDITIONAL INFORMATION:
+    /*
+     * These are file attachments
+     * We are not adding this for now
+     *  Skip Number: 89976625527856-05/2014-89000
+     */
+
+    //Run the Payload based on the above defined Form fields:   BSS-CODE-91031
+    $payload = array(
+        "u_account" => service_now_get_account_by_uid($user->name),
+        "u_contact_name" => $form_state['values']['submitted_tree']['name'],
+        "u_registrar_contact_by_tld.u_email" => $form_state['values']['submitted_tree']['email'],
+        "u_case_category" => $form_state['values']['submitted_tree']['category'],
+        "u_subject" => $FORM_SUBJECT,
+        "description" => $attempted_to_resolve . "\n" . $registrar_info . "\n" .  $registrar_name . "\n" . $transfer_point . "\n" . $registrar_address . "\n" . $registrar_email . "\n" . $registrar_phone . "\n" . $registrar_fax
+            . "\n" . $respo_id . "\n" . $respo_trans_point . "\n" . $respo_email."\n".$respo_phone . "\n" . $respo_fax ."\n" . $registrant_info . "\n" .  $registrant_name . "\n" . $registrant_address1 . "\n" . $registrant_address2 . "\n" . $registrant_city
+            ."\n". $registrant_state."\n". $registrant_zip."\n". $registrant_country."\n". $registrant_email ."\n". $registrant_phone."\n". $registrant_fax."\n" . $admin_info."\n". $admin_contact."\n". $admin_address1."\n".$admin_address2
+            ."\n". $admin_city."\n". $admin_state."\n". $admin_zip."\n". $admin_country."\n". $admin_email."\n".$admin_phone."\n". $admin_fax ."\n". $background ."\n". $date_of_alleged."\n".$incident_desc."\n".$req_remedy
+            ."\n".$grounds."\n".$domain_names."\n".$number_of_dispute,
+    );
+
+    return service_now_insert_case($payload);
+}//END
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * Adds an additional submit handler to send the ticket to ServiceNow's API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_application_for_reinstatement_of_sponsorship
+ */
+function service_now_form_webform_client_form_54_alter(&$form, &$form_state)
+{
+  $form['#submit'][] = 'service_now_application_for_reinstatement_of_sponsorship';
+}
+
+/**
+ * Callback function for the additional submit handler for the Application for Reinstatement of Sponsorship.
+ *
+ * @param $form
+ * @param $form_state
+ * @return int (either the case number on success, or FALSE on failure)
+ * @see service_now_form_webform_client_form_54_alter()
+ * @see service_now_insert_case()
+ */
+function service_now_application_for_reinstatement_of_sponsorship($form, &$form_state)
+{
+
+  global $user;
+
+  $previous_registrar_name_id = 'Previous Registrar Name/Registrar ID: '.$form_state['values']['submitted_tree']['registrar_information']['previous_registrar_name_registrar_id'];
+  $previous_registrar_transfer_point_of_contact = 'Previous Registrar Transfer Point of Contact: '.$form_state['values']['submitted_tree']['registrar_information']['previous_registrar_transfer_point_of_contact'];
+  $previous_registrar_address = 'Previous Registrar Address: '.$form_state['values']['submitted_tree']['registrar_information']['previous_registrar_address'];
+  $previous_registrar_email = 'Previous Registrar Email: '.$form_state['values']['submitted_tree']['registrar_information']['previous_registrar_email'];
+  $previous_registrar_phone = 'Previous Registrar Phone: '.$form_state['values']['submitted_tree']['registrar_information']['previous_registrar_phone'];
+  $previous_registrar_fax = 'Previous Registrar Fax: '.$form_state['values']['submitted_tree']['registrar_information']['previous_registrar_fax'];
+
+  $gaining_registrar_name_id = 'Gaining Registrar Name/Registrar ID: '.$form_state['values']['submitted_tree']['registrar_information']['gaining_registrar_name__registrar_id'];
+  $gaining_registrar_transfer_point_of_contact = 'Gaining Registrar Transfer Point of Contact: '.$form_state['values']['submitted_tree']['registrar_information']['gaining_registrar_transfer_point_of_contact'];
+  $gaining_registrar_address = 'Gaining Registrar Address: '.$form_state['values']['submitted_tree']['registrar_information']['gaining_registrar_address'];
+  $gaining_registrar_email = 'Gaining Registrar Email: '.$form_state['values']['submitted_tree']['registrar_information']['gaining_registrar_email'];
+  $gaining_registrar_phone = 'Gaining Registrar Phone: '.$form_state['values']['submitted_tree']['registrar_information']['gaining_registrar_phone'];
+  $gaining_registrar_fax = 'Gaining Registrar Fax: '.$form_state['values']['submitted_tree']['registrar_information']['gaining_registrar_fax'];
+
+  $domain_names = 'Domain Names: '."\n".$form_state['values']['submitted_tree']['registrar_information']['domain_names'];
+  $number_of_reinstated_sponsorships = 'Number of Reinstated Sponsorships: '.$form_state['values']['submitted_tree']['registrar_information']['number_of_reinstated_sponsorships'];
+
+  $payload = array(
+
+    "u_account" => service_now_get_account_by_uid($user->name),
+    "u_case_category" => $form_state['values']['submitted_tree']['registrar_information']['category'],
+    "u_subject" => 'Reinstatement of Sponsorship',
+
+    "description" =>  $previous_registrar_name_id."\n".$previous_registrar_transfer_point_of_contact."\n".$previous_registrar_address."\n".$previous_registrar_email."\n".$previous_registrar_phone."\n".$previous_registrar_fax."\n".$gaining_registrar_name_id."\n".$gaining_registrar_transfer_point_of_contact."\n".$gaining_registrar_address."\n".$gaining_registrar_email."\n".$gaining_registrar_phone."\n".$gaining_registrar_fax."\n".$domain_names."\n".$number_of_reinstated_sponsorships,
+
+    "opened_by" => $form_state['values']['submitted_tree']['registrar_information']['previous_registrar_transfer_point_of_contact'] . " (" . $form_state['values']['submitted_tree']['registrar_information']['previous_registrar_email'] . ")",
+
+  );
+  return service_now_insert_case($payload);
+
+}
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * Adds an additional submit handler to send the ticket to ServiceNow's API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_notice_of_withdrawal
+ */
+function service_now_form_webform_client_form_37_alter(&$form, &$form_state)
+{
+  $form['#submit'][] = 'service_now_notice_of_withdrawal';
+}
+
+/**
+ * Callback function for the additional submit handler for the Notice of Withdrawal webform.
+ *
+ * @param $form
+ * @param $form_state
+ * @return int (either the case number on success, or FALSE on failure)
+ * @see service_now_form_webform_client_form_37_alter()
+ * @see service_now_insert_case()
+ */
+function service_now_notice_of_withdrawal($form, &$form_state)
+{
+
+  global $user;
+
+  $ticket_id = 'Ticket ID: '.$form_state['values']['submitted_tree']['case_information']['ticket_id'];
+  $reason_for_withdrawal = 'Reason for Withdrawal: '."\n".$form_state['values']['submitted_tree']['registrar_information']['reason_for_withdrawal'];
+
+  $filing_registrar_name_registrar_id = 'Filing Registrar Name/Registrar ID: '.$form_state['values']['submitted_tree']['registrar_information']['filing_registrar_name_registrar_id'];
+  $filing_registrar_transfer_point_of_contact = 'Filing Registrar Point of Contact: '.$form_state['values']['submitted_tree']['registrar_information']['filing_registrar_point_of_contact'];
+  $filing_registrar_address = 'Filing Registrar Address: '.$form_state['values']['submitted_tree']['registrar_information']['filing_registrar_address'];
+  $filing_email = 'Filing Registrar Email: '.$form_state['values']['submitted_tree']['registrar_information']['filing_registrar_email'];
+  $filing_registrar_phone = 'Filing Registrar Phone: '.$form_state['values']['submitted_tree']['registrar_information']['filing_registrar_phone'];
+  $filing_registrar_fax = 'Filing Registrar Fax: '.$form_state['values']['submitted_tree']['registrar_information']['filing_registrar_fax'];
+
+  $respondent_registrar_name_registrar_id = 'Respondent Registrar Name/Registrar ID: '.$form_state['values']['submitted_tree']['registrar_information']['respondent_registrar_name_registrar_id'];
+  $respondent_registrar_transfer_point_of_contact = 'Respondent Registrar Point of Contact: '.$form_state['values']['submitted_tree']['registrar_information']['respondent_registrar_point_of_contact'];
+  $respondent_address = 'Respondent Registrar Address: '.$form_state['values']['submitted_tree']['registrar_information']['respondent_address'];
+  $respondent_email = 'Respondent Email: '.$form_state['values']['submitted_tree']['registrar_information']['respondent_email'];
+  $respondent_phone = 'Respondent Phone: '.$form_state['values']['submitted_tree']['registrar_information']['respondent_phone'];
+  $respondent_fax = 'Respondent Fax: '.$form_state['values']['submitted_tree']['registrar_information']['respondent_fax'];
+
+  $payload = array(
+    "u_account" => service_now_get_account_by_uid($user->name),
+    "u_case_category" => $form_state['values']['submitted_tree']['category'],
+    "u_subject" => 'Notice of Withdrawal',
+
+    "description" => $ticket_id."\n".$reason_for_withdrawal."\n".$filing_registrar_name_registrar_id."\n".$filing_registrar_transfer_point_of_contact."\n".$filing_registrar_address."\n".$filing_email."\n".$filing_registrar_phone."\n".$filing_registrar_fax."\n".$respondent_registrar_name_registrar_id."\n".$respondent_registrar_transfer_point_of_contact."\n".$respondent_address."\n".$respondent_phone."\n".$respondent_fax,
+
+    "opened_by" => $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_point_of_contact'] . " (" . $form_state['values']['submitted_tree']['registrar_information']['filing_registrar_email'] . ")",
+
+  );
+  return service_now_insert_case($payload);
+
+}
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * Adds an additional submit handler to send the ticket to ServiceNow's API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_notice_of_withdrawal
+ */
+function service_now_form_webform_client_form_94_alter(&$form, &$form_state)
+{
+  $form['#submit'][] = 'service_now_credit_card_authorization';
+}
+
+/**
+ * Callback function for the additional submit handler for the Credit Card Authorization Form.
+ *
+ * @param $form
+ * @param $form_state
+ * @return int (either the case number on success, or FALSE on failure)
+ * @see service_now_form_webform_client_form_94_alter()
+ * @see service_now_insert_case()
+ */
+function service_now_credit_card_authorization($form, &$form_state)
+{
+
+  global $user;
+
+
+  $authorized_contact_name = 'Authorized Contact Name: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['authorized_contact_name'];
+  $address = 'Address: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['address'];
+  $city = 'City: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['city'];
+  $state_province = 'State/Province: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['state_province'];
+  $country = 'Country: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['country'];
+  $telephone = 'Telephone: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['telephone'];
+  $fax = 'Fax: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['fax'];
+  $email_address = 'Email: '.$form_state['values']['submitted_tree']['credit_card_contact_information']['email_address'];
+  $registrar_name = 'Registrar Name: '.$form_state['values']['submitted_tree']['registrar_data']['registrar_name'];
+  $registrar_id = 'Registrar ID: '.$form_state['values']['submitted_tree']['registrar_data']['registrar_id'];
+
+  $payload = array(
+
+    "u_account" => service_now_get_account_by_uid($user->name),
+
+    "u_case_category" => $form_state['values']['submitted_tree']['category'],
+    "u_subject" => 'Credit Card Authorization',
+
+    "description" => $authorized_contact_name."\n".$address."\n".$city."\n".$state_province."\n".$country."\n".$telephone."\n".$fax."\n".$email_address."\n".$registrar_name."\n".$registrar_id,
+
+    "opened_by" => $form_state['values']['submitted_tree']['credit_card_contact_information']['authorized_contact_name'] . " (" . $form_state['values']['submitted_tree']['credit_card_contact_information']['email_address'] . ")",
+
+  );
+  return service_now_insert_case($payload);
+
+}
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * Adds an additional submit handler to send the ticket to ServiceNow's API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_notice_of_withdrawal
+ */
+function service_now_form_webform_client_form_79_alter(&$form, &$form_state)
+{
+  $form['#submit'][] = 'service_now_emergency_credit';
+}
+
+/**
+ * Callback function for the additional submit handler for the Emergency Credit Form.
+ *
+ * @param $form
+ * @param $form_state
+ * @return int (either the case number on success, or FALSE on failure)
+ * @see service_now_form_webform_client_form_79_alter()
+ * @see service_now_insert_case()
+ */
+function service_now_emergency_credit($form, &$form_state)
+{
+
+  global $user;
+
+  $registrar_id = 'Registrar ID: '.$form_state['values']['submitted_tree']['registrar_id'];
+  $registrar_name = 'Registrar Name: '.$form_state['values']['submitted_tree']['registrar_name'];
+  $requestor_name = 'Requestor Name: '.$form_state['values']['submitted_tree']['requestor_name'];
+  $registrar_account_representative = 'Registrar Account Representative: '.$form_state['values']['submitted_tree']['registrar_account_representative'];
+  $amount_of_emergency_credit_requested = 'Amount of emergency credit requested: '.$form_state['values']['submitted_tree']['amount_of_emergency_credit_requested'];
+  $requestor_email = 'Requestor Email: '.$form_state['values']['submitted_tree']['requestor_email'];
+
+  $payload = array(
+    "u_account" => service_now_get_account_by_uid($user->name),
+    "u_case_category" => $form_state['values']['submitted_tree']['category'],
+    "u_subject" => 'Emergency Credit',
+
+    "description" => $registrar_id."\n".$registrar_name."\n".$requestor_name."\n".$registrar_account_representative."\n".$amount_of_emergency_credit_requested."\n".$requestor_email,
+
+    "opened_by" => $form_state['values']['submitted_tree']['requestor_name'] . " (" . $form_state['values']['submitted_tree']['requestor_email'] . ")",
+
+  );
+  return service_now_insert_case($payload);
+
+}
+
+/**
+ * Given a UID, get a sys_id
+ */
+function service_now_get_account_by_uid($uid)
+{
+  $endpoint = variable_get('service_now_account_endpoint');
+  $rest = service_now_construct('JSON', $endpoint);
+  $filters = array('u_username' => $uid);
+  try {
+    $sysIDs = $rest->getAccount($filters);
+  } catch (Exception $e) {
+    dsm($e->getMessage());
+  }
+  return $sysIDs[$uid];
+}
+
+
+/**
+ * @param null $filters
+ * @return mixed
+ */
+function service_now_get_TLDs($filters = NULL)
+{
+  $endpoint = variable_get('service_now_tlds_endpoint');
+  $rest = service_now_construct('JSON', $endpoint);
+  try {
+    $tlds = $rest->getTLDs($filters);
+  } catch (Exception $e) {
+    dsm($e->getMessage());
+  }
+  return $tlds;
+}
+
+/**
+ * Since different types of case might have different payloads, this
+ * function will just send the payload and return the case ID of the new case.
+ *
+ * @param $payload
+ * @return bool
+ */
+function service_now_insert_case($payload)
+{
+  $rest = service_now_construct();
+  $result = $rest->insertRecord($payload);
+  $parsed_results = json_decode($result->data);
+
+  if ($parsed_results->records[0]->__status == "success") {
+    watchdog('servicenow', 'Case #' . $parsed_results->records[0]->number . ' created.');
+    return array(
+      "CaseID" => $parsed_results->records[0]->number,
+      "sys_id" => $parsed_results->records[0]->sys_id
+    );
+  } else {
+    drupal_set_message('Failed to add a new Case to ServiceNow', 'error');
+    return FALSE;
+  }
+}
+
+function service_now_sync_tlds_callback($form, &$form_state)
+{
+  $tlds = service_now_get_TLDs();
+  $count = service_now_sync_tlds($tlds);
+  drupal_set_message("Added $count new TLD Groups");
+}
+
+/**
+ * Given an array of ServiceNowTLD objects:
+ * @todo use EFQ to check for any Groups with that title
+ * @todo if you find one, overwrite the sys_id field with the value from the obj
+ *  ...create a node of type group with the correct name and sys_id.
+ *
+ * Returns the count of the number of NEW nodes.
+ *
+ * @param $tlds
+ * @return int
+ */
+function service_now_sync_tlds($tlds)
+{
+  $count = 0;
+  foreach ($tlds as $tld) {
+
+    $grp = new stdClass();
+    $grp->type = "group";
+    $grp->title = $tld->name;
+    $grp->field_sys_id['und'][0]['value'] = $tld->sys_id;
+
+    $efq = new EntityFieldQuery();
+    $efq->entityCondition('entity_type', 'node')
+      ->propertyCondition('type', 'group')
+      ->propertyCondition('title', $tld->name);
+    $result = $efq->execute();
+
+    if (isset($result['node'])) {
+      $nids = array_keys($result['node']);
+      $grp->nid = $nids[0];
+    }
+    node_save($grp);
+    if (isset($grp->nid)) {
+      $count++;
+    }
+  }
+  return $count;
+}
+
+
+/**
+ * Implementation of hook_theme
+ *
+ * @return array
+ */
+function service_now_theme()
+{
+  return array(
+    'service_now_case' => array(
+      'template' => 'service_now_case',
+      'variables' => array('case' => NULL),
+    ),
+  );
+}

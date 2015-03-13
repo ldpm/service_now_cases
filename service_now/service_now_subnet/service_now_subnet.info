@@ -1,0 +1,9 @@
+name = Service Now integration: IP Subnet Object
+description = "Adds API consumption for the IP subnets table in ServiceNow."
+core = 7.x
+package = Customer Portal
+version = "7.x-1.0"
+
+dependencies[] = libraries
+dependencies[] = service_now
+files[] = service_now_subnet.module

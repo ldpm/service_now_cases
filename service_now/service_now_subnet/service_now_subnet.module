@@ -1,0 +1,139 @@
+<?php
+/**
+ * Created by PhpStorm.
+ * User: lmiller
+ * Date: 2/4/14
+ * Time: 4:26 PM
+ */
+
+/**
+ * Implementation of hook_menu
+ */
+function service_now_subnet_menu() {
+  $items = array();
+  $items['admin/config/services/servicenow/subnet'] = array(
+    'title' => t('ServiceNow IP Subnet'),
+    'access arguments' => array('administer Service Now Integration'),
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('service_now_subnet_settings'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 10,
+  );
+  return $items;
+}
+
+/**
+ * Callback function for Category menu.
+ *
+ * @return mixed
+ * @todo change text field for category into a drop-down of actual categories.
+ */
+function service_now_subnet_settings() {
+  $form['service_now_subnet_endpoint'] = array(
+    '#type' => 'textfield',
+    '#title' => 'ServiceNow REST endpoint URL for IP Subnets',
+    '#description' => t("Please enter the URL for the ServiceNow REST endpoint for Subnets.  Do not include the JSON"),
+    '#default_value' => variable_get('service_now_subnet_endpoint'),
+  );
+
+  return system_settings_form($form);
+}
+
+/**
+ * Implements hook_form_ID_alter.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_subnet_open_ticket
+ */
+function service_now_subnet_form_webform_client_form_40_alter(&$form, &$form_state) {
+  $form['#submit'][] = 'service_now_subnet_open_ticket';
+}
+
+/**
+ * Callback function for the additional submit handler for IP Subnet form.
+ *
+ * 1) Create the base ticket, which should be pretty simple.
+ * 2) For each subnet, create a ServiceNowSubnet object and push it onto a list.
+ * 3) Iterate through the list, sending Subnet requests to the API.
+ *
+ * @param $form
+ * @param $form_state
+ * @see service_now_subnet_form_webform_client_form_40_alter()
+ */
+function service_now_subnet_open_ticket($form, &$form_state) {
+  global $user;
+  $payload = array(
+    "u_account" => service_now_get_account_by_uid($user->name),
+    "short_description" => "IP Subnet Change",
+    "u_case_category" => $form_state['values']['submitted_tree']['category'],
+    "priority" => $form_state['values']['submitted_tree']['severity_impact_to_customer'],
+    "u_customer_case.u_tld" => $form_state['values']['submitted_tree']['registrar_information']['tld'],
+  );
+  $caseID = service_now_insert_case($payload);
+
+  $subnets = array();
+  // iterate through the current_registrar_ip_subnet values
+  foreach ($form_state['values']['submitted_tree']['current_registrar_ip_subnets'] as $cur_key => $cur_val) {
+    if (!empty($cur_val)) {
+      $subnet = new ServiceNowSubnet();
+      $subnet->u_parent = $caseID['sys_id'];
+      $subnet->u_action = "Current";
+      $subnet->u_subnet = $cur_val;
+      $subnets[] = $subnet;
+    }
+  }
+  foreach ($form_state['values']['submitted_tree']['registrar_ip_subnets_to_add'] as $cur_key => $cur_val) {
+    if (!empty($cur_val)) {
+      $subnet = new ServiceNowSubnet();
+      $subnet->u_parent = $caseID['sys_id'];
+      $subnet->u_action = "Add";
+      $subnet->u_subnet = $cur_val;
+      $subnets[] = $subnet;
+    }
+  }
+  foreach ($form_state['values']['submitted_tree']['registrar_ip_subnets_to_delete_if_any'] as $cur_key => $cur_val) {
+    if (!empty($cur_val)) {
+      $subnet = new ServiceNowSubnet();
+      $subnet->u_parent = $caseID['sys_id'];
+      $subnet->u_action = "Remove";
+      $subnet->u_subnet = $cur_val;
+      $subnets[] = $subnet;
+    }
+  }
+  foreach ($subnets as $sub) {
+    $result = service_now_subnet_insert_subnet(get_object_vars($sub));
+  }
+}
+
+function service_now_subnet_insert_subnet($payload) {
+  $rest = service_now_subnet_construct();
+  $result = $rest->insertRecord($payload);
+  $parsed_results = json_decode($result->data);
+  //dsm($parsed_results);
+  return TRUE;
+}
+
+
+/**
+ * @return ServiceNowRest
+ */
+function service_now_subnet_construct() {
+  if ($path = libraries_get_path('service_now')) {
+    include_once "$path/ServiceNowRest.class.php";
+    spl_autoload_register(array('ServiceNowRest', 'snrAutoload'));
+  }
+  $rest = new ServiceNowRest(
+    variable_get('service_now_username'),
+    variable_get('service_now_password'),
+    variable_get('service_now_subnet_endpoint')
+  );
+  try {
+    $rest->encodeAuthorization();
+  }
+  catch (Exception $e) {
+    dsm($e->getMessage());
+  }
+  return $rest;
+}
+
